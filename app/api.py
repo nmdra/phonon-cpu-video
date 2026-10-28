@@ -19,13 +19,21 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from .conversion import MediaError, prepared_audio
-from .lifecycle import Worker
+from .lifecycle import ResponseLimitError, Worker
 from .settings import Settings
+from .transcript import (
+    CONTENT_TYPES,
+    OutputOptions,
+    TranscriptError,
+    parse_duration,
+    render_transcript,
+)
 
 # Only upstream text parameters are accepted. No paths or URLs are forwarded.
 FIELDS = {
     "model",
     "response_format",
+    "segment_duration",
     "hotwords",
     "hotwords[]",
     "language",
@@ -41,6 +49,45 @@ LIST_FIELDS = {"hotwords[]", "timestamp_granularities[]"}
 class IngressError(Exception):
     def __init__(self, message, status=400):
         self.message, self.status = message, status
+
+
+def _output_request(fields: dict[str, str | list[str]]):
+    """Separate presentation options from the upstream inference parameters."""
+    forwarded = dict(fields)
+    format_name = forwarded.get("response_format", "json")
+    if not isinstance(format_name, str) or format_name not in {
+        "json",
+        "verbose_json",
+        "text",
+        "txt",
+        "srt",
+        "vtt",
+    }:
+        raise IngressError("Unsupported response_format")
+    raw_duration = forwarded.pop("segment_duration", None)
+    duration = None
+    if raw_duration is not None:
+        if not isinstance(raw_duration, str):
+            raise IngressError("Invalid segment_duration")
+        try:
+            duration = parse_duration(raw_duration)
+        except TranscriptError:
+            raise IngressError("segment_duration must be finite and positive") from None
+    if duration is None and format_name not in {"srt", "vtt"}:
+        if format_name == "txt":
+            forwarded["response_format"] = "text"
+        return forwarded, None, "native"
+    forwarded["response_format"] = "verbose_json"
+    output_format = {
+        "text": "txt",
+        "txt": "txt",
+        "json": "json",
+        "verbose_json": "json",
+        "srt": "srt",
+        "vtt": "vtt",
+    }[format_name]
+    style = "text" if format_name == "json" else "native"
+    return forwarded, OutputOptions(output_format, duration), style
 
 
 class Upload:
@@ -217,6 +264,7 @@ def create_app(
         context = None
         conversion_task = inference_task = disconnect_task = None
         inference_generation = None
+        managed_output = False
         try:
             length = request.headers.get("content-length")
             if length is not None:
@@ -246,6 +294,10 @@ def create_app(
                 raise IngressError("A complete, nonempty file is required")
             if upload.fields.get("model") != model:
                 raise IngressError("model must match the configured model")
+            upstream_fields, output_options, json_style = _output_request(upload.fields)
+            managed_output = (
+                output_options is not None or upload.fields.get("response_format") == "txt"
+            )
             disconnect_task = asyncio.create_task(disconnected(request))
             context = prepared_audio(source, settings)
             conversion_task = asyncio.create_task(asyncio.to_thread(context.__enter__))
@@ -260,7 +312,7 @@ def create_app(
             if not ready:
                 raise IngressError("Worker unavailable", 503)
             inference_generation = generation
-            inference_task = asyncio.create_task(worker.transcribe(audio, upload.fields))
+            inference_task = asyncio.create_task(worker.transcribe(audio, upstream_fields))
             done, _ = await asyncio.wait(
                 {inference_task, disconnect_task},
                 timeout=settings.inference_timeout,
@@ -273,11 +325,27 @@ def create_app(
                     raise IngressError("Client disconnected", 499)
                 raise IngressError("Inference timed out", 504)
             response = inference_task.result()
+            if response.is_success and output_options is not None:
+                content = render_transcript(response.content, output_options, json_style=json_style)
+                content_type = CONTENT_TYPES[output_options.format]
+                return Response(
+                    content,
+                    status_code=response.status_code,
+                    headers={"content-type": content_type},
+                )
             return Response(
                 response.content,
                 status_code=response.status_code,
                 headers={"content-type": response.headers.get("content-type", "application/json")},
             )
+        except ResponseLimitError:
+            if not managed_output and inference_task is not None:
+                # Preserve native no-option recovery behavior.
+                await recover(inference_generation)
+            return JSONResponse({"error": "Invalid or oversized transcript output"}, 502)
+        except TranscriptError:
+            # A bad transcript is not a dead worker or a malformed upload.
+            return JSONResponse({"error": "Invalid or oversized transcript output"}, 502)
         except MediaError as exc:
             return JSONResponse({"error": str(exc)}, status_code=exc.status_code)
         except IngressError as exc:

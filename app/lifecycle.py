@@ -9,6 +9,12 @@ from pathlib import Path
 
 import httpx
 
+from .transcript import TRANSCRIPT_LIMIT
+
+
+class ResponseLimitError(RuntimeError):
+    """Upstream returned too much data, which does not imply worker failure."""
+
 
 class Worker:
     def __init__(
@@ -18,7 +24,7 @@ class Worker:
         *,
         threads: int | None = None,
         port: int = 8001,
-        response_limit: int = 4 * 1024 * 1024,
+        response_limit: int = TRANSCRIPT_LIMIT,
     ):
         self.model = model
         self.api_key = api_key
@@ -130,7 +136,7 @@ class Worker:
                 async for chunk in response.aiter_bytes(chunk_size=65536):
                     body.extend(chunk)
                     if len(body) > self.response_limit:
-                        raise RuntimeError("Upstream response exceeds limit")
+                        raise ResponseLimitError("Upstream response exceeds limit")
                 return httpx.Response(
                     response.status_code,
                     content=bytes(body),

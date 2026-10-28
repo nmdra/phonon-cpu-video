@@ -1,6 +1,7 @@
 """Ingress tests use a fake worker and never load a model or use the network."""
 
 import asyncio
+import json
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -53,7 +54,7 @@ def setup(tmp_path, monkeypatch):
     return Settings(scratch_dir=tmp_path), FakeWorker()
 
 
-def run_case(settings, worker, function, api_key="secret"):
+def run_case(settings, worker, function, api_key: str | None = "secret"):
     async def run():
         app = create_app(settings, worker, api_key=api_key)
         async with app.router.lifespan_context(app):
@@ -72,6 +73,251 @@ def post(client, **kwargs):
     kwargs.setdefault("data", {"model": "test-model"})
     kwargs.setdefault("files", {"file": ("sample.mp4", b"media", "video/mp4")})
     return client.post("/v1/audio/transcriptions", **kwargs)
+
+
+def verbose_transcript():
+    # Observed fermion-research 0.2.15 HTTP verbose_json schema; synthetic speech.
+    return {
+        "text": "hello world again",
+        "duration": 65.0,
+        "segments": [
+            {"id": 0, "start": 0.0, "end": 10.0, "text": "hello", "tokens": []},
+            {"id": 1, "start": 10.0, "end": 32.0, "text": "world", "tokens": []},
+            {"id": 2, "start": 62.0, "end": 65.0, "text": "again", "tokens": []},
+        ],
+        "words": [{"word": "hello", "start": 0.0, "end": 10.0}],
+        "x_fermion": {"model": "test-model", "segment_count": 3},
+    }
+
+
+@pytest.mark.parametrize(
+    ("format_name", "target", "expected", "mime"),
+    [
+        ("txt", None, b"native text", "text/plain; charset=utf-8"),
+        ("text", "30", b"hello world\n\nagain\n", "text/plain; charset=utf-8"),
+        ("txt", "30", b"hello world\n\nagain\n", "text/plain; charset=utf-8"),
+        (
+            "srt",
+            "30",
+            b"1\n00:00:00,000 --> 00:00:32,000\nhello world\n\n"
+            b"2\n00:01:02,000 --> 00:01:05,000\nagain\n\n",
+            "application/x-subrip; charset=utf-8",
+        ),
+        (
+            "vtt",
+            "30",
+            b"WEBVTT\n\n00:00:00.000 --> 00:00:32.000\nhello world\n\n"
+            b"00:01:02.000 --> 00:01:05.000\nagain\n\n",
+            "text/vtt; charset=utf-8",
+        ),
+    ],
+)
+def test_http_exports(setup, format_name, target, expected, mime):
+    settings, worker = setup
+    worker.result = httpx.Response(
+        200,
+        content=json.dumps(verbose_transcript()).encode() if target else b"native text",
+        headers={"content-type": "text/plain; charset=utf-8"},
+    )
+
+    async def case(client, app):
+        fields = {"model": "test-model", "response_format": format_name, "hotwords": "one"}
+        if target:
+            fields["segment_duration"] = target
+        response = await post(client, data=fields)
+        assert response.status_code == 200
+        assert response.content == expected
+        assert response.headers["content-type"] == mime
+        forwarded = worker.calls[-1][1]
+        assert "segment_duration" not in forwarded
+        assert forwarded["response_format"] == ("verbose_json" if target else "text")
+        assert forwarded["hotwords"] == "one"
+        assert worker.started == 1 and worker.stopped == 0
+
+    run_case(settings, worker, case)
+
+
+@pytest.mark.parametrize("format_name", [None, "json", "verbose_json"])
+def test_http_grouped_json_keeps_public_shape(setup, format_name):
+    settings, worker = setup
+    native = verbose_transcript()
+    worker.result = httpx.Response(200, json=native)
+
+    async def case(client, app):
+        fields = {"model": "test-model", "segment_duration": "30"}
+        if format_name:
+            fields["response_format"] = format_name
+        response = await post(client, data=fields)
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "application/json"
+        result = response.json()
+        assert result["output_segments"] == [
+            {"id": 0, "start": 0.0, "end": 32.0, "text": "hello world"},
+            {"id": 1, "start": 62.0, "end": 65.0, "text": "again"},
+        ]
+        assert result["output_segment_count"] == 2
+        if format_name == "verbose_json":
+            assert {k: v for k, v in result.items() if not k.startswith("output_")} == native
+        else:
+            assert set(result) == {"text", "output_segments", "output_segment_count"}
+        assert worker.calls[-1][1] == {"model": "test-model", "response_format": "verbose_json"}
+
+    run_case(settings, worker, case)
+
+
+@pytest.mark.parametrize("format_name", ["srt", "vtt"])
+def test_subtitle_export_without_grouping_uses_source_cues(setup, format_name):
+    settings, worker = setup
+    worker.result = httpx.Response(200, json=verbose_transcript())
+
+    async def case(client, app):
+        result = await post(client, data={"model": "test-model", "response_format": format_name})
+        assert result.status_code == 200
+        assert result.content.count(b" --> ") == 3
+        assert worker.calls[-1][1]["response_format"] == "verbose_json"
+
+    run_case(settings, worker, case)
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [{"segment_duration": value} for value in ("", "0", "-1", "NaN", "inf", "1e309", "bad")]
+    + [{"response_format": "unsupported"}],
+)
+def test_invalid_output_options_fail_before_conversion(setup, monkeypatch, fields):
+    settings, worker = setup
+
+    def forbidden(*args):
+        pytest.fail("Invalid options reached media conversion")
+
+    monkeypatch.setattr("app.api.prepared_audio", forbidden)
+
+    async def case(client, app):
+        result = await post(client, data={"model": "test-model", **fields})
+        assert result.status_code == 400
+        assert not worker.calls
+
+    run_case(settings, worker, case)
+
+
+def test_segment_duration_is_scalar(setup):
+    settings, worker = setup
+
+    async def case(client, app):
+        fields = [
+            ("model", (None, "test-model")),
+            ("segment_duration", (None, "10")),
+            ("segment_duration", (None, "20")),
+            ("file", ("x", b"media")),
+        ]
+        assert (await post(client, data={}, files=fields)).status_code == 400
+        assert not worker.calls
+
+    run_case(settings, worker, case)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"not-json-private-transcript",
+        b"\xff",
+        b'{"text":"private-transcript"}',
+        b'{"text":"x","segments":[{"start":false,"end":1,"text":"x"}]}',
+        b'{"text":"x","segments":[{"start":0,"end":1e308,"text":"x"}]}',
+        b"[" * 2000 + b"]" * 2000,
+    ],
+)
+def test_export_failure_does_not_restart_worker(setup, body):
+    settings, worker = setup
+    worker.result = httpx.Response(200, content=body)
+
+    async def case(client, app):
+        result = await post(client, data={"model": "test-model", "response_format": "srt"})
+        assert result.status_code == 502
+        assert b"private-transcript" not in result.content
+        assert worker.started == 1 and worker.stopped == 0
+        assert list(settings.scratch_dir.iterdir()) == []
+        worker.result = httpx.Response(200, json=verbose_transcript())
+        recovered = await post(client, data={"model": "test-model", "response_format": "vtt"})
+        assert recovered.status_code == 200
+        assert worker.started == 1 and worker.stopped == 0
+
+    run_case(settings, worker, case)
+
+
+def test_rendered_response_limit_does_not_restart_worker(setup):
+    settings, worker = setup
+    payload = "&" * 900000
+    worker.result = httpx.Response(
+        200, json={"text": payload, "segments": [{"start": 0, "end": 1, "text": payload}]}
+    )
+
+    async def case(client, app):
+        result = await post(client, data={"model": "test-model", "response_format": "vtt"})
+        assert result.status_code == 502
+        assert worker.started == 1 and worker.stopped == 0
+        assert list(settings.scratch_dir.iterdir()) == []
+        worker.result = httpx.Response(200, json=verbose_transcript())
+        assert (await post(client)).status_code == 200
+
+    run_case(settings, worker, case)
+
+
+@pytest.mark.parametrize("format_name", [None, "txt", "srt", "vtt"])
+def test_upstream_capture_overflow_preserves_export_worker(setup, monkeypatch, format_name):
+    from app.lifecycle import Worker
+
+    settings, worker = setup
+
+    async def case(client, app):
+        backend = Worker("test-model", response_limit=8)
+        backend.ready = True
+        backend.client = httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, content=b"x" * 9)),
+            base_url="http://upstream",
+        )
+        monkeypatch.setattr(worker, "transcribe", backend.transcribe)
+        fields = {"model": "test-model"}
+        if format_name:
+            fields["response_format"] = format_name
+        try:
+            response = await post(client, data=fields)
+            assert response.status_code == 502
+            # Native requests retain their original recovery behavior.
+            restarts = 0 if format_name else 1
+            assert worker.started == 1 + restarts and worker.stopped == restarts
+            assert list(settings.scratch_dir.iterdir()) == []
+            await backend.client.aclose()
+            backend.client = httpx.AsyncClient(
+                transport=httpx.MockTransport(
+                    lambda request: httpx.Response(200, json=verbose_transcript())
+                ),
+                base_url="http://upstream",
+            )
+            backend.response_limit = 4 * 1024 * 1024
+            recovered = await post(client, data={"model": "test-model", "response_format": "vtt"})
+            assert recovered.status_code == 200
+            assert worker.started == 1 + restarts and worker.stopped == restarts
+        finally:
+            await backend.stop()
+
+    run_case(settings, worker, case)
+
+
+def test_upstream_export_failure_is_not_parsed(setup):
+    settings, worker = setup
+    worker.result = httpx.Response(
+        422, content=b"native failure", headers={"content-type": "application/problem+json"}
+    )
+
+    async def case(client, app):
+        result = await post(client, data={"model": "test-model", "response_format": "vtt"})
+        assert result.status_code == 422
+        assert result.content == b"native failure"
+        assert result.headers["content-type"] == "application/problem+json"
+        assert worker.started == 1 and worker.stopped == 0
+
+    run_case(settings, worker, case)
 
 
 def test_optional_auth_checks_before_upload(setup):
@@ -663,7 +909,9 @@ def test_worker_stop_kills_descendant_after_leader_exits(tmp_path):
             "import os, signal, time, pathlib; "
             "pid = os.fork(); "
             "signal.signal(signal.SIGTERM, signal.SIG_IGN) if pid == 0 else None; "
-            f"pathlib.Path({str(marker)!r}).write_text(str(os.getpid())) if pid == 0 else None; "
+            f"pathlib.Path({str(marker) + '.tmp'!r}).write_text(str(os.getpid())) "
+            "if pid == 0 else None; "
+            f"os.replace({str(marker) + '.tmp'!r}, {str(marker)!r}) if pid == 0 else None; "
             "time.sleep(60) if pid == 0 else None"
         )
         process = await asyncio.create_subprocess_exec(
