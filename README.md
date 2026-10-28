@@ -30,29 +30,24 @@ Commands other than `transcribe` and `serve-video` delegate to the original entr
 
 The first inference run can download model weights. Mount the cache for persistence. For an offline model, pass an upstream-compatible model directory mounted into the container instead of a model name. This project does not redistribute weights.
 
-## Authenticated HTTP
+## Local HTTP
 
-Set a strong bearer key outside source control:
+No API key is needed for local personal use:
 
 ```sh
-read -r -s PHONON_VIDEO_API_KEY
-export PHONON_VIDEO_API_KEY
-
 docker run --rm -p 127.0.0.1:8000:8000 \
-  -e PHONON_VIDEO_API_KEY \
   -v phonon-cache:/home/phonon/.cache \
   phonon-cpu-video:local serve-video phonon-2.5
 ```
 
 ```sh
 curl --fail-with-body http://127.0.0.1:8000/v1/audio/transcriptions \
-  -H "Authorization: Bearer $PHONON_VIDEO_API_KEY" \
   -F 'model=phonon-2.5' \
   -F 'file=@meeting.mp4' \
   -F 'response_format=json'
 ```
 
-`serve-video MODEL` runs one upstream model on `127.0.0.1:8001` and exposes the adapter on port 8000. Supported server options are `--host`, `--port`, `--api-key`, and `--threads`. Prefer the environment variable for the key to avoid shell history. The request `model` must exactly match the startup model string. There is no per-request model loading or automatic alias switching.
+`serve-video MODEL` runs one upstream model on `127.0.0.1:8001` and exposes the adapter on port 8000. Supported server options are `--host`, `--port`, `--api-key`, and `--threads`. Authentication is off unless you set `PHONON_VIDEO_API_KEY` or `--api-key`. If you enable it, send `Authorization: Bearer YOUR_KEY` with requests. Prefer the environment variable for the key to avoid shell history. The request `model` must exactly match the startup model string. There is no per-request model loading or automatic alias switching.
 
 - `POST /v1/audio/transcriptions`: multipart with exactly one `file`, a `model`, and optional upstream text fields
 - `GET /health`: 200 only when the adapter and upstream worker are ready; otherwise 503
@@ -60,9 +55,9 @@ curl --fail-with-body http://127.0.0.1:8000/v1/audio/transcriptions \
 
 Text fields include `response_format` (`json`, `text`, `verbose_json`), `hotwords`, `hotwords[]`, `hotword_lambda`, `prompt`, `timestamp_granularities`, `timestamp_granularities[]`, `language`, and `temperature`. Unsupported semantics remain upstream's responsibility. Upstream is English-only and deterministic; accepting these last two fields does not add translation or sampling support. Repeated list fields are preserved; duplicate scalar fields are rejected. The adapter returns upstream status, content type, and bounded body.
 
-Authentication occurs before body processing. Excess work is rejected with 429 rather than queued. Upload limit errors return 413; invalid media returns 422. Worker failure returns 5xx. If inference times out or a client disconnects during inference, the worker is stopped before capacity is reused, because closing an HTTP connection does not cancel upstream inference. Worker restart may take time. Check `/health` before retrying.
+When enabled, authentication occurs before body processing. Excess work is rejected with 429 rather than queued. Upload limit errors return 413; invalid media returns 422. Worker failure returns 5xx. If inference times out or a client disconnects during inference, the worker is stopped before capacity is reused, because closing an HTTP connection does not cancel upstream inference. Worker restart may take time. Check `/health` before retrying.
 
-For Compose, export the key and run `docker compose up --build`. The example binds only host loopback. Put a TLS-enabled reverse proxy in front for remote access. Do not expose upstream port 8001.
+For Compose, run `docker compose up --build`; no key setup is needed. The example binds only host loopback. Do not expose the unauthenticated service on a public interface. Enable authentication and put a TLS-enabled reverse proxy in front if you later need remote access. Do not expose upstream port 8001.
 
 ## Limits
 
@@ -116,9 +111,9 @@ CI runs tests and Docker smoke checks on native amd64 and arm64. Synthetic media
 
 ## Release procedure
 
-Do not publish until the owner selects this project's license and completes the third-party distribution review described in `NOTICE`.
+The adapter uses Apache-2.0. Complete the third-party distribution review described in `NOTICE` before publishing a combined image.
 
-1. Create the remote repository in the approved account. Configure main-branch review requirements, required CI, release tag rules, and a protected `release` environment with required reviewers. Reviewers must check code licensing and FFmpeg/model obligations.
+1. Create the remote repository in the approved account. Configure main-branch review requirements, required CI, release tag rules, and a protected `release` environment with required reviewers. Reviewers must check Apache-2.0 notices and FFmpeg/model obligations.
 2. Merge reviewed code with passing CI. Create a semantic version tag on that commit.
 3. Supply the manual publish workflow with a licensed spoken WAV fixture URL/hash, expected words, and an offline model archive URL/hash. Preserve source, license, model revision, hashes, download budget, and expected transcript in release records. Do not use signed URLs or secrets in public workflow inputs.
 4. The workflow builds candidate images, scans them (high/critical findings block release), and runs real CLI and HTTP inference on native amd64 and arm64. The model archive hash pins the exact tested weights. No release is valid with build-only or emulated runtime coverage.
@@ -139,4 +134,4 @@ GitHub/GHCR creation and publishing are not performed by local setup. `GITHUB_TO
 
 ## Attribution and license status
 
-This adapter is independent of Fermion Research and does not claim upstream endorsement. See `NOTICE`. No license for the new adapter code has been selected yet, so redistribution of a combined image is blocked pending owner choice and third-party review.
+This adapter is independent of Fermion Research and does not claim upstream endorsement. The adapter code is licensed under [Apache-2.0](LICENSE). See `NOTICE` for attribution and third-party software/model requirements. Combined-image distribution still requires the third-party review.

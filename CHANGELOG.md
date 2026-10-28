@@ -11,7 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add CPU-only video and audio normalization inside the upstream Phonon container
 - Add a CLI adapter that retains upstream model arguments, output, and exit status
-- Add authenticated, single-model multipart HTTP transcription with readiness checks
+- Add local single-model multipart HTTP transcription with optional authentication and readiness checks
+- License the adapter code under Apache-2.0
 - Add resource limits, private scratch files, decoder protocol restrictions, and worker recovery
 - Add native amd64/arm64 CI and candidate-image verification before release promotion
 
