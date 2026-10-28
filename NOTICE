@@ -1,0 +1,37 @@
+Phonon CPU + Video
+
+This independent adapter uses the Phonon CPU container from Fermion Research:
+https://github.com/fermionresearch/phonon
+https://github.com/fermionresearch/phonon/pkgs/container/phonon-cpu
+
+No upstream source is copied into the adapter. The image inherits upstream
+software and adds distro FFmpeg and Python wrapper dependencies.
+
+Inspected fermion-research 0.2.11 wheel metadata declares Apache-2.0 and carries
+LICENSE and NOTICE files. Preserve the originals in the upstream installation.
+Its NOTICE credits Fermion Research, Qwen/Alibaba/Hugging Face, and the
+Parakeet architecture by NVIDIA. Inspect the actual pinned container packages
+before distributing a release; current source is not proof of image contents.
+
+Model weights are not included in this project's source or image. Model
+repositories have their own licenses and attribution requirements. The inspected
+upstream NOTICE identifies Phonon-2 / NVIDIA Parakeet-derived weights as
+CC-BY-4.0 and Phonon-1 / Qwen-derived weights as Apache-2.0. Do not infer that
+these entries cover every model or the current Phonon-2.5 release. Check the
+exact model revision and preserve its license and NOTICE before deployment
+or redistribution.
+
+FFmpeg distribution terms depend on the build and linked codecs. Retain the
+installed Debian package copyright and license files under /usr/share/doc.
+Review ffmpeg -buildconf, package source availability, GPL/LGPL terms, and
+applicable codec obligations before distributing the combined image.
+https://ffmpeg.org/legal.html
+
+Python wrapper dependencies have separate licenses. Record their resolved
+versions in requirements.lock and uv.lock; retain package license metadata in
+the wrapper virtual environment. Generate/review an image SBOM before release.
+
+The owner has not selected a license for the new adapter code. This notice
+is attribution and a release checklist, not a license grant. A LICENSE file,
+third-party distribution review, and model/fixture provenance review are
+release blockers. Do not publish the combined image until they are resolved.
