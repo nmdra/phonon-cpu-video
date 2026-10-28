@@ -1,0 +1,256 @@
+name: Manual release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing reviewed main tag, exactly vX.Y.Z
+        required: true
+        type: string
+      fixture_url:
+        description: Licensed spoken fixture HTTPS URL (max 100 MiB)
+        required: true
+        type: string
+      fixture_sha256:
+        description: Fixture lowercase SHA-256
+        required: true
+        type: string
+      expected_words:
+        description: Expected contiguous spoken words (normalized for comparison)
+        required: true
+        type: string
+      model_url:
+        description: Offline cache tar HTTPS URL (max 16 GiB, links forbidden)
+        required: true
+        type: string
+      model_sha256:
+        description: Offline cache tar lowercase SHA-256
+        required: true
+        type: string
+      model:
+        description: Model identifier in the supplied cache
+        default: phonon-2.5
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: release
+  cancel-in-progress: false
+jobs:
+  validate:
+    # Run trusted workflow code only. The selected existing tag is built later.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      commit: ${{ steps.validate.outputs.commit }}
+      image: ${{ steps.validate.outputs.image }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+      - name: Validate tag, main ancestry, input syntax, and CI result
+        id: validate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          FIXTURE_URL: ${{ inputs.fixture_url }}
+          FIXTURE_SHA256: ${{ inputs.fixture_sha256 }}
+          MODEL_URL: ${{ inputs.model_url }}
+          MODEL_SHA256: ${{ inputs.model_sha256 }}
+          EXPECTED_WORDS: ${{ inputs.expected_words }}
+        run: |
+          python - <<'PY'
+          import importlib.util, json, os, subprocess
+          spec = importlib.util.spec_from_file_location('acceptance', 'scripts/release-inference.py')
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          version = module.validate_version(os.environ['VERSION'])
+          for prefix in ('FIXTURE', 'MODEL'):
+              module.validate_https(os.environ[prefix + '_URL'])
+              module.validate_sha256(os.environ[prefix + '_SHA256'])
+          if not module.normalized_words(os.environ['EXPECTED_WORDS']):
+              raise SystemExit('Expected words cannot be empty')
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+          commit = git('rev-parse', '--verify', f'refs/tags/{version}^{{commit}}')
+          subprocess.run(['git', 'merge-base', '--is-ancestor', commit, 'origin/main'], check=True)
+          repo = os.environ['GITHUB_REPOSITORY']
+          endpoint = f'repos/{repo}/actions/workflows/ci.yml/runs?head_sha={commit}&event=push&per_page=100'
+          runs = json.loads(subprocess.check_output(['gh', 'api', endpoint]))['workflow_runs']
+          matching = [r for r in runs if r['head_sha'] == commit and r['head_branch'] == 'main']
+          if not matching or max(matching, key=lambda r: r['run_number'])['conclusion'] != 'success':
+              raise SystemExit('Latest main push CI for the exact commit must have succeeded')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write(f'commit={commit}\nimage=ghcr.io/{repo.lower()}\n')
+          PY
+  candidate:
+    needs: validate
+    # Configure required reviewers and main-only deployment restrictions. Approval
+    # includes owner license selection, NOTICE/FFmpeg/model/fixture license review.
+    environment: release
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+          persist-credentials: false
+      # v5.6.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      # v3.11.1
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435
+      # v3.4.0
+      - uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build architecture candidate with attestations
+        id: build
+        # v6.18.0
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          tags: ${{ needs.validate.outputs.image }}:candidate-${{ needs.validate.outputs.commit }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
+          sbom: true
+          provenance: mode=max
+      - name: Pull exact candidate and run no-model checks
+        env:
+          IMAGE: ${{ needs.validate.outputs.image }}@${{ steps.build.outputs.digest }}
+        run: |
+          docker pull "$IMAGE"
+          scripts/smoke-test.sh "$IMAGE"
+      - name: Scan exact candidate image
+        id: scan
+        uses: anchore/scan-action@df395807f4554463d4455b8047cf58e37b6acaae # v6.5.0
+        with:
+          image: ${{ needs.validate.outputs.image }}@${{ steps.build.outputs.digest }}
+          fail-build: true
+          severity-cutoff: high
+          output-format: json
+      - name: Preserve vulnerability report
+        if: always() && steps.scan.outputs.json != ''
+        env:
+          REPORT: ${{ steps.scan.outputs.json }}
+        run: |
+          mkdir -p evidence
+          cp "$REPORT" evidence/vulnerabilities.json
+      - name: Real offline CLI and HTTP inference, WAV and video
+        env:
+          IMAGE: ${{ needs.validate.outputs.image }}@${{ steps.build.outputs.digest }}
+          FIXTURE_URL: ${{ inputs.fixture_url }}
+          FIXTURE_SHA256: ${{ inputs.fixture_sha256 }}
+          MODEL_URL: ${{ inputs.model_url }}
+          MODEL_SHA256: ${{ inputs.model_sha256 }}
+          EXPECTED_WORDS: ${{ inputs.expected_words }}
+          MODEL: ${{ inputs.model }}
+        run: |
+          mkdir -p evidence
+          python scripts/release-inference.py --image "$IMAGE" \
+            --fixture-url "$FIXTURE_URL" --fixture-sha256 "$FIXTURE_SHA256" \
+            --model-url "$MODEL_URL" --model-sha256 "$MODEL_SHA256" \
+            --model "$MODEL" --expected-words "$EXPECTED_WORDS" \
+            --evidence evidence/inference.json
+      - name: Record tested architecture digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: printf '%s\n' "$DIGEST" > evidence/digest
+      # v4.6.2
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: tested-${{ matrix.arch }}
+          path: evidence/
+          if-no-files-found: error
+  assemble:
+    needs: [validate, candidate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.manifest.outputs.digest }}
+    steps:
+      # v3.11.1
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435
+      # v3.4.0
+      - uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # v4.3.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: tested-*
+          path: evidence
+      - name: Assemble only the tested architecture digests
+        id: manifest
+        env:
+          IMAGE: ${{ needs.validate.outputs.image }}
+          COMMIT: ${{ needs.validate.outputs.commit }}
+        run: |
+          AMD64=$(cat evidence/tested-amd64/digest)
+          ARM64=$(cat evidence/tested-arm64/digest)
+          [[ "$AMD64" =~ ^sha256:[a-f0-9]{64}$ ]]
+          [[ "$ARM64" =~ ^sha256:[a-f0-9]{64}$ ]]
+          TAG="candidate-${COMMIT}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker buildx imagetools create --tag "$IMAGE:$TAG" \
+            "$IMAGE@$AMD64" "$IMAGE@$ARM64"
+          DIGEST=$(docker buildx imagetools inspect "$IMAGE:$TAG" \
+            --format '{{json .Manifest}}' | jq -r .digest)
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "Review tested manifests, scan reports and inference evidence before promotion." >> "$GITHUB_STEP_SUMMARY"
+          echo "Candidate: $IMAGE@$DIGEST" >> "$GITHUB_STEP_SUMMARY"
+  promote:
+    needs: [validate, assemble]
+    # Reviewers must inspect evidence from BOTH architectures before approval.
+    environment: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # v3.11.1
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435
+      # v3.4.0
+      - uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Promote exact tested multiarchitecture manifest (no rebuild, no latest)
+        env:
+          IMAGE: ${{ needs.validate.outputs.image }}
+          DIGEST: ${{ needs.assemble.outputs.digest }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          VERSION="${VERSION#v}"
+          docker buildx imagetools create --prefer-index=false \
+            --tag "$IMAGE:$VERSION" "$IMAGE@$DIGEST"
+          ACTUAL=$(docker buildx imagetools inspect "$IMAGE:$VERSION" \
+            --format '{{json .Manifest}}' | jq -r .digest)
+          test "$ACTUAL" = "$DIGEST"
+          echo "Released $IMAGE:$VERSION at $DIGEST" >> "$GITHUB_STEP_SUMMARY"
