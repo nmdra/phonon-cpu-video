@@ -7,37 +7,41 @@ https://github.com/fermionresearch/phonon/pkgs/container/phonon-cpu
 
 Credit for the speech models, CPU inference engine, original CLI/API, and base
 container belongs to Fermion Research and the upstream contributors. This
-independent project adds FFmpeg media preparation, a video-capable adapter,
+independent project adds FFmpeg media preparation, an adapter for video,
 packaging, and tests. It is not an official or endorsed Fermion Research release.
 
-No upstream source is copied into the adapter. The image inherits upstream
-software and adds distro FFmpeg and Python wrapper dependencies.
+The adapter does not contain copied upstream source. The image includes upstream
+software, distro FFmpeg, and Python wrapper dependencies.
 
-Inspected fermion-research 0.2.11 wheel metadata declares Apache-2.0 and carries
-LICENSE and NOTICE files. Preserve the originals in the upstream installation.
-Its NOTICE credits Fermion Research, Qwen/Alibaba/Hugging Face, and the
-Parakeet architecture by NVIDIA. Inspect the actual pinned container packages
-before distributing a release; current source is not proof of image contents.
+The inspected fermion-research 0.2.11 wheel metadata declares Apache-2.0.
+The wheel includes LICENSE and NOTICE files. Preserve the original files in the
+upstream installation. The upstream NOTICE credits Fermion Research,
+Qwen/Alibaba/Hugging Face, and the Parakeet architecture by NVIDIA.
+Before you distribute a release, inspect the packages in the pinned container.
+The current source does not prove which software the image contains.
 
-Model weights are not included in this project's source or image. Model
-repositories have their own licenses and attribution requirements. The inspected
-upstream NOTICE identifies Phonon-2 / NVIDIA Parakeet-derived weights as
-CC-BY-4.0 and Phonon-1 / Qwen-derived weights as Apache-2.0. Do not infer that
-these entries cover every model or the current Phonon-2.5 release. Check the
-exact model revision and preserve its license and NOTICE before deployment
-or redistribution.
+This project's source and image do not include model weights. Model repositories
+have their own licenses and attribution requirements. The inspected upstream
+NOTICE identifies Phonon-2 / NVIDIA Parakeet-derived weights as CC-BY-4.0.
+It identifies Phonon-1 / Qwen-derived weights as Apache-2.0. Do not assume that
+these entries apply to every model or the current Phonon-2.5 release.
+Before deployment or redistribution, check the exact model revision and
+preserve the model license and NOTICE.
 
 FFmpeg distribution terms depend on the build and linked codecs. Retain the
 installed Debian package copyright and license files under /usr/share/doc.
-Review ffmpeg -buildconf, package source availability, GPL/LGPL terms, and
-applicable codec obligations before distributing the combined image.
+Before you distribute the combined image, review these items:
+- ffmpeg -buildconf
+- Package source availability
+- GPL/LGPL terms
+- Applicable codec obligations
 https://ffmpeg.org/legal.html
 
 Python wrapper dependencies have separate licenses. Record their resolved
-versions in requirements.lock and uv.lock; retain package license metadata in
-the wrapper virtual environment. Generate/review an image SBOM before release.
+versions in requirements.lock and uv.lock. Keep package license metadata in
+the wrapper virtual environment. Before release, generate and review an image SBOM.
 
 The new adapter code is licensed under the Apache License, Version 2.0.
 See LICENSE for the full terms. Third-party software and model weights retain
 their own licenses. Third-party distribution review and model/fixture provenance
-review remain release blockers for the combined image.
+review are still required before you release the combined image.
