@@ -22,11 +22,64 @@ docker run --rm \
   transcribe phonon-2.5 /data/meeting.mp4 --json
 ```
 
-The adapter accepts `transcribe MODEL FILE [upstream options]`. It converts the input to a private temporary WAV. It then invokes the original entrypoint and preserves stdout and exit status. It removes temporary files after the command. Conversion diagnostics go to stderr. Supported inputs are WAV, MP3, FLAC, Ogg, MP4/MOV, Matroska/WebM, and AVI. The adapter uses content, not the file extension, to identify the format. The first audio stream is selected. Video with no audio and unknown/nonfinite duration are rejected. The adapter also normalizes WAV. All supported inputs use the same validated path.
+The adapter accepts `transcribe MODEL FILE [upstream options]`. It converts the input to a private temporary WAV. It then invokes the original entrypoint. Without adapter output options, it preserves native stdout, stderr, arguments, and exit status. It removes temporary files after the command. Conversion diagnostics go to stderr. Supported inputs are WAV, MP3, FLAC, Ogg, MP4/MOV, Matroska/WebM, and AVI. The adapter uses content, not the file extension, to identify the format. The first audio stream is selected. Video with no audio and unknown/nonfinite duration are rejected. The adapter also normalizes WAV. All supported inputs use the same validated path.
 
 Commands other than `transcribe` and `serve-video` delegate to the original entrypoint. Native `serve` remains unchanged, including upstream streaming support and authentication behavior. Use native `serve` only with deployment controls appropriate to upstream.
 
 The first inference run can download model weights. Mount the cache for persistence. For an offline model, pass an upstream-compatible model directory mounted into the container instead of a model name. This project does not redistribute model weights.
+
+### Transcript exports and output files
+
+Adapter options follow `MODEL FILE`:
+
+| Option | Behavior |
+|---|---|
+| `--output-format txt\|srt\|vtt\|json` | Select UTF-8 transcript output explicitly |
+| `--segment-duration SECONDS` | Group complete timed segments toward a finite positive target |
+| `--output PATH` | Publish a complete file without overwriting an existing destination |
+
+Without these options, native output remains unchanged. `--segment-duration` alone selects TXT. With `--json` or `--output-format json`, grouping adds JSON output records instead. `--json` conflicts with an explicit non-JSON format. Adapter options cannot be repeated; unrelated upstream options keep their order.
+
+For stdout subtitles:
+
+```sh
+docker run --rm \
+  -v "$PWD:/data:ro" \
+  -v phonon-cache:/home/phonon/.cache \
+  phonon-cpu-video:local \
+  transcribe phonon-2.5 /data/meeting.mp4 --output-format srt
+```
+
+File output needs a separate writable mount because `/data` remains read-only. Create `results` on the host first and grant the container's `phonon` user (UID 1001) write access through ownership or an ACL. The adapter does not create parent directories.
+
+```sh
+mkdir -p results
+# Set ownership or an ACL for UID 1001 before running the container.
+docker run --rm \
+  -v "$PWD:/data:ro" \
+  -v "$PWD/results:/results" \
+  -v phonon-cache:/home/phonon/.cache \
+  phonon-cpu-video:local \
+  transcribe phonon-2.5 /data/meeting.mp4 \
+  --output-format vtt --segment-duration 30 --output /results/meeting.vtt
+```
+
+- `--output` alone preserves native plain text, or native JSON with `--json`. A filename extension never selects the format. Use `--output-format json --output /results/meeting.json` to request JSON explicitly. `--output -` writes to stdout.
+- File output produces no transcript stdout. Diagnostics and upstream progress remain on stderr. Existing destinations, including symlinks and the source itself, are refused. There is no overwrite option.
+- The adapter stages the result beside the destination and publishes with an atomic no-clobber hard link after inference and validation succeed. This needs a filesystem that supports hard links. It never falls back to truncating or replacing a destination. A competing file created during inference is also preserved.
+- Failures or cancellation before publication leave no final file from this invocation. After publication, the complete file remains even if staging cleanup fails; a cleanup warning goes to stderr. A post-publication signal can return a signal-derived status even though the complete output exists.
+- Managed capture and rendered output each have a 4 MiB UTF-8 byte limit. Malformed, oversized, or invalidly timed transcript output returns CLI status 1 without publishing a result. Invalid adapter options return status 2. Native upstream failures keep their exit status. Stdout is not transactional: a broken pipe or interruption during the final write can leave partial consumer output. Use file output for atomic publication.
+
+### Grouping and subtitle limits
+
+Grouping changes presentation, not recognition or audio processing. For a target of 30 seconds, the adapter adds whole source segments until the elapsed group span reaches 30 seconds. It emits a shorter group before a silence gap of at least 30 seconds. The final group can be shorter. An individual source segment longer than the target remains intact.
+
+This is neither exact-duration splitting nor a maximum-duration promise. Native timestamps can describe coarse decoder windows. A small target cannot create finer timing. Long groups can be unsuitable for readable on-screen subtitles. The adapter does not add word alignment, speakers, translation, line-width rules, or recognition corrections.
+
+- Ungrouped TXT uses the native top-level text. Grouped TXT uses one paragraph per output group, separated by a blank line. Nonempty managed TXT ends in one newline.
+- SRT uses numbered cues and comma-separated milliseconds. VTT starts with `WEBVTT` and uses dot-separated milliseconds. Without a target, each nonblank source segment is a cue.
+- Subtitle payload whitespace is collapsed, NUL becomes U+FFFD, and `&`, `<`, and `>` are escaped as literal text. Times use half-up millisecond rounding. Missing, overlapping, out-of-order, nonfinite, or rounded zero-length timings cause an error rather than invented alignment.
+- Grouped CLI JSON and HTTP verbose JSON retain native `segments`, `segment_count`, word arrays, and model metadata. They add `output_segments` and `output_segment_count`. Each output segment has a zero-based `id`, `start`, `end`, and `text`. Output groups are not decoder segments. Native transcript whitespace stays unchanged; grouped text joins stripped segment text with a single space.
 
 ## Local HTTP
 
@@ -51,7 +104,31 @@ curl --fail-with-body http://127.0.0.1:8000/v1/audio/transcriptions \
 - `GET /health`: 200 only when the adapter and upstream worker are ready; otherwise 503
 - No proxy route for upstream streaming, model listing, or arbitrary paths
 
-Text fields include `response_format` (`json`, `text`, `verbose_json`), `hotwords`, `hotwords[]`, `hotword_lambda`, `prompt`, `timestamp_granularities`, `timestamp_granularities[]`, `language`, and `temperature`. Unsupported semantics remain upstream's responsibility. The upstream worker is English-only and deterministic. Accepting `language` and `temperature` does not add translation or sampling support. The adapter preserves repeated list fields. It rejects duplicate scalar fields. The adapter returns upstream status, content type, and bounded body.
+Text fields include `response_format` (`json`, `text`, `verbose_json`, `txt`, `srt`, `vtt`), local `segment_duration`, `hotwords`, `hotwords[]`, `hotword_lambda`, `prompt`, `timestamp_granularities`, `timestamp_granularities[]`, `language`, and `temperature`. Unsupported semantics remain upstream's responsibility. The upstream worker is English-only and deterministic. Accepting `language` and `temperature` does not add translation or sampling support. The adapter preserves repeated list fields. It rejects duplicate scalar fields. Without new formats or grouping, the adapter returns upstream status, content type, and bounded body unchanged.
+
+### HTTP exports
+
+```sh
+curl --fail-with-body http://127.0.0.1:8000/v1/audio/transcriptions \
+  -F 'model=phonon-2.5' \
+  -F 'file=@meeting.mp4' \
+  -F 'response_format=srt' \
+  -F 'segment_duration=30' \
+  -o transcript.srt
+```
+
+`segment_duration` is an optional scalar finite positive number of seconds. The adapter consumes it locally, not as an inference parameter. `txt` aliases `text`. SRT/VTT and all grouping requests acquire `verbose_json` internally for timing. Word timestamps are not required. The endpoint does not accept an output path or write client-selected server files; `curl -o` writes on the client.
+
+| Format | Response content type |
+|---|---|
+| `text`, `txt` | `text/plain; charset=utf-8` |
+| `srt` | `application/x-subrip; charset=utf-8` |
+| `vtt` | `text/vtt; charset=utf-8` |
+| `json`, `verbose_json` | `application/json` |
+
+Grouped ordinary `json` returns only `text`, `output_segments`, and `output_segment_count`, not the internal verbose metadata. Grouped `verbose_json` retains all native fields and adds those output records. Grouping and subtitle limits are the same as the CLI rules above.
+
+Invalid formats, invalid durations, or duplicate scalar options return 400 before conversion and inference. Invalid transcript structure/timing or output over 4 MiB returns a generic 502. A formatting failure releases capacity and cleans scratch files but does not restart a healthy worker. Non-success upstream status, body, and content type pass through without export processing.
 
 When enabled, authentication occurs before body processing. Excess work is rejected with 429 rather than queued. Upload limit errors return 413. Invalid media returns 422. Upstream worker failure returns 5xx. If inference times out or a client disconnects during inference, the adapter stops the upstream worker before it reuses capacity. Closing an HTTP connection does not cancel upstream inference. The upstream worker can take time to restart. Check `/health` before retrying.
 

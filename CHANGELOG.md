@@ -9,6 +9,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Added
 
+- Add TXT, SRT, and WebVTT export through the CLI and HTTP adapter
+- Add target-duration output grouping without changing recognition or native segment metadata
+- Add bounded CLI output capture and atomic no-clobber transcript file publication
 - Add CPU-only video and audio normalization inside the upstream Phonon container
 - Add a CLI adapter that retains upstream model arguments, output, and exit status
 - Add local multipart HTTP transcription for one model, with optional authentication and readiness checks

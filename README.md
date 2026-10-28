@@ -38,6 +38,8 @@ Do not expose the unauthenticated service on a public interface. For remote acce
 
 - [Build and supported platforms](docs/guide.md#build)
 - [CLI and model cache](docs/guide.md#cli)
+- [TXT, SRT, VTT exports and output files](docs/guide.md#transcript-exports-and-output-files)
+- [HTTP exports and output grouping](docs/guide.md#http-exports)
 - [Resource limits](docs/guide.md#limits)
 - [Media security and deployment](docs/guide.md#media-security-and-deployment)
 - [Development checks](docs/guide.md#development-checks)
