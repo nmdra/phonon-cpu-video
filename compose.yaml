@@ -1,0 +1,34 @@
+services:
+  phonon-video:
+    build: .
+    image: phonon-cpu-video:local
+    command:
+      - serve-video
+      - ${PHONON_MODEL:-phonon-2.5}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --threads
+      - "${PHONON_THREADS:-2}"
+    environment:
+      PHONON_VIDEO_API_KEY: ${PHONON_VIDEO_API_KEY:-}
+    ports:
+      - "127.0.0.1:${PHONON_VIDEO_PORT:-8000}:8000"
+    volumes:
+      - model-cache:/home/phonon/.cache
+    tmpfs:
+      - /tmp:size=512m,mode=1777,noexec,nosuid,nodev
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    cpus: "${PHONON_CPUS:-2}"
+    mem_limit: ${PHONON_MEMORY:-8g}
+    pids_limit: 256
+    init: true
+    stop_grace_period: 20s
+
+volumes:
+  model-cache:

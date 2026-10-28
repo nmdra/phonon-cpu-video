@@ -1,0 +1,10 @@
+**
+!app/
+!app/*.py
+!scripts/
+!scripts/entrypoint.sh
+!scripts/smoke-test.sh
+!LICENSE
+!NOTICE
+!requirements.lock
+!Dockerfile
