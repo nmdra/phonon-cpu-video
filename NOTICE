@@ -31,7 +31,7 @@ Python wrapper dependencies have separate licenses. Record their resolved
 versions in requirements.lock and uv.lock; retain package license metadata in
 the wrapper virtual environment. Generate/review an image SBOM before release.
 
-The owner has not selected a license for the new adapter code. This notice
-is attribution and a release checklist, not a license grant. A LICENSE file,
-third-party distribution review, and model/fixture provenance review are
-release blockers. Do not publish the combined image until they are resolved.
+The new adapter code is licensed under the Apache License, Version 2.0.
+See LICENSE for the full terms. Third-party software and model weights retain
+their own licenses. Third-party distribution review and model/fixture provenance
+review remain release blockers for the combined image.

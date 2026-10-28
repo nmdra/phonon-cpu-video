@@ -2,6 +2,8 @@
 name = "phonon-cpu-video"
 version = "0.2.0"
 description = "Bounded video ingress and CLI adapter for the Phonon CPU container"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.12"
 dependencies = [
   "httpx>=0.28.1,<1",
@@ -19,6 +21,12 @@ package = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.12"
+include = ["app"]
 
 [tool.ruff]
 target-version = "py312"
