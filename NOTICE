@@ -1,8 +1,14 @@
 Phonon CPU + Video
 
-This independent adapter uses the Phonon CPU container from Fermion Research:
-https://github.com/fermionresearch/phonon
+Upstream project: Phonon by Fermion Research and its contributors.
+Original repository: https://github.com/fermionresearch/phonon
+Upstream CPU container:
 https://github.com/fermionresearch/phonon/pkgs/container/phonon-cpu
+
+Credit for the speech models, CPU inference engine, original CLI/API, and base
+container belongs to Fermion Research and the upstream contributors. This
+independent project adds FFmpeg media preparation, a video-capable adapter,
+packaging, and tests. It is not an official or endorsed Fermion Research release.
 
 No upstream source is copied into the adapter. The image inherits upstream
 software and adds distro FFmpeg and Python wrapper dependencies.

@@ -2,7 +2,17 @@
 
 A standalone container adapter for [Fermion Research Phonon](https://github.com/fermionresearch/phonon). FFmpeg inside the image converts local video and audio to mono 16 kHz PCM WAV. The original CPU engine performs transcription. No GPU or host FFmpeg is required.
 
-**Development status:** local implementation, not a published release. Image references below use a local build. Real speech inference and native ARM64 runtime acceptance must pass before release. See `PHONON_CPU_VIDEO_PLAN.md` for decisions and remaining gates.
+**Development status:** not a published release. Image references below use a local build. Real speech inference and native ARM64 runtime acceptance must pass before release. See the release procedure below for remaining gates.
+
+## Credits
+
+This project builds on **[Phonon by Fermion Research](https://github.com/fermionresearch/phonon)**. Credit for the speech models, CPU inference engine, original CLI/API, and base container belongs to Fermion Research and the upstream contributors.
+
+- **Original repository:** [fermionresearch/phonon](https://github.com/fermionresearch/phonon)
+- **Upstream CPU image:** [ghcr.io/fermionresearch/phonon-cpu](https://github.com/fermionresearch/phonon/pkgs/container/phonon-cpu)
+- **Upstream CPU documentation:** [Running on CPUs](https://github.com/fermionresearch/phonon/blob/main/docs/cpu.md)
+
+This repository adds FFmpeg media preparation, a video-capable CLI/HTTP adapter, and its own packaging and tests. It does not implement the speech recognition engine or claim ownership of the upstream models. It is an independent project, not an official Fermion Research release or an endorsed product. See [NOTICE](NOTICE) for third-party attribution and license requirements.
 
 ## Build
 
