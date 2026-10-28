@@ -141,7 +141,7 @@ jobs:
           scripts/smoke-test.sh "$IMAGE"
       - name: Scan exact candidate image
         id: scan
-        uses: anchore/scan-action@df395807f4554463d4455b8047cf58e37b6acaae # v6.5.0
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         with:
           image: ${{ needs.validate.outputs.image }}@${{ steps.build.outputs.digest }}
           fail-build: true
