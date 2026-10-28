@@ -2,8 +2,6 @@
 
 This independent container adapter uses [Phonon by Fermion Research](https://github.com/fermionresearch/phonon) to transcribe local video and audio. FFmpeg in the image converts media to mono 16 kHz PCM WAV. The original CPU engine does the transcription. No GPU or host FFmpeg is required.
 
-**Development status:** not a published release. The examples use a local build. Real speech inference and native ARM64 runtime acceptance must pass before release.
-
 ## Credits
 
 Credit for the speech models, CPU inference engine, original CLI/API, and base container belongs to **Fermion Research and the upstream contributors**.
