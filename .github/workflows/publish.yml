@@ -117,7 +117,7 @@ jobs:
       # v3.11.1
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
       # v3.4.0
-      - uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -194,7 +194,7 @@ jobs:
       # v3.11.1
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
       # v3.4.0
-      - uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -236,7 +236,7 @@ jobs:
       # v3.11.1
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
       # v3.4.0
-      - uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
