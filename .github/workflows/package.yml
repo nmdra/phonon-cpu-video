@@ -7,6 +7,11 @@ on:
         default: 0.2.0-preview
         required: true
         type: string
+      accept_known_risks:
+        description: Accept reported vulnerabilities for this preview only
+        default: false
+        required: true
+        type: boolean
 permissions:
   contents: read
 concurrency:
@@ -92,7 +97,7 @@ jobs:
         uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         with:
           image: ${{ needs.validate.outputs.image }}@${{ steps.build.outputs.digest }}
-          fail-build: true
+          fail-build: ${{ !inputs.accept_known_risks }}
           severity-cutoff: high
           output-format: json
       - name: Record checked digest
@@ -136,6 +141,7 @@ jobs:
         env:
           IMAGE: ${{ needs.validate.outputs.image }}
           TAG: ${{ inputs.tag }}
+          ACCEPT_KNOWN_RISKS: ${{ inputs.accept_known_risks }}
         run: |
           AMD64=$(cat evidence/preview-amd64/digest)
           ARM64=$(cat evidence/preview-arm64/digest)
@@ -146,7 +152,13 @@ jobs:
           docker buildx imagetools inspect "$IMAGE:$TAG"
           {
             echo "Published preview: $IMAGE:$TAG"
-            echo "Smoke checks and scans passed on native amd64 and arm64."
+            echo "Smoke checks passed on native amd64 and arm64."
+            echo "Vulnerability scans completed; reports are in run artifacts."
+            if [ "$ACCEPT_KNOWN_RISKS" = true ]; then
+              echo "Reported vulnerabilities accepted for this preview only."
+            else
+              echo "High/Critical vulnerability gate passed."
+            fi
             echo "No model weights downloaded. Real transcription not tested."
             echo "No stable or latest tag published."
           } >> "$GITHUB_STEP_SUMMARY"
