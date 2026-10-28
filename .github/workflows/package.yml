@@ -1,0 +1,152 @@
+name: Publish preview package
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Preview package tag (no model inference acceptance)
+        default: 0.2.0-preview
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: preview-package
+  cancel-in-progress: false
+jobs:
+  validate:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      image: ${{ steps.validate.outputs.image }}
+    steps:
+      - name: Check preview tag and passing CI
+        id: validate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          python - <<'PY'
+          import json, os, re, subprocess
+          if not re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-preview(?:\.(0|[1-9][0-9]*))?', os.environ['TAG']):
+              raise SystemExit('Only preview tags are permitted')
+          repo, sha = os.environ['GITHUB_REPOSITORY'], os.environ['GITHUB_SHA']
+          endpoint = f'repos/{repo}/actions/workflows/ci.yml/runs?head_sha={sha}&event=push&per_page=100'
+          runs = json.loads(subprocess.check_output(['gh', 'api', endpoint]))['workflow_runs']
+          runs = [r for r in runs if r['head_sha'] == sha and r['head_branch'] == 'main']
+          if not runs or max(runs, key=lambda r: r['run_number'])['conclusion'] != 'success':
+              raise SystemExit('Main push CI must pass for this exact commit first')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write(f'image=ghcr.io/{repo.lower()}\n')
+          PY
+  build:
+    needs: validate
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push architecture candidate
+        id: build
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          tags: ${{ needs.validate.outputs.image }}:preview-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.description=Preview package; real model inference not tested
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha,scope=video-${{ matrix.arch }}
+      - name: Check exact candidate without model downloads
+        env:
+          IMAGE: ${{ needs.validate.outputs.image }}@${{ steps.build.outputs.digest }}
+        run: |
+          docker pull "$IMAGE"
+          scripts/smoke-test.sh "$IMAGE"
+      - name: Scan exact candidate
+        id: scan
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          image: ${{ needs.validate.outputs.image }}@${{ steps.build.outputs.digest }}
+          fail-build: true
+          severity-cutoff: high
+          output-format: json
+      - name: Record checked digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p evidence
+          printf '%s\n' "$DIGEST" > evidence/digest
+      - name: Preserve scan report
+        if: always() && steps.scan.outputs.json != ''
+        env:
+          REPORT: ${{ steps.scan.outputs.json }}
+        run: |
+          mkdir -p evidence
+          cp "$REPORT" evidence/vulnerabilities.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: preview-${{ matrix.arch }}
+          path: evidence/
+          if-no-files-found: error
+  publish:
+    needs: [validate, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: preview-*
+          path: evidence
+      - name: Publish checked architectures as preview only
+        env:
+          IMAGE: ${{ needs.validate.outputs.image }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          AMD64=$(cat evidence/preview-amd64/digest)
+          ARM64=$(cat evidence/preview-arm64/digest)
+          [[ "$AMD64" =~ ^sha256:[a-f0-9]{64}$ ]]
+          [[ "$ARM64" =~ ^sha256:[a-f0-9]{64}$ ]]
+          docker buildx imagetools create --tag "$IMAGE:$TAG" \
+            "$IMAGE@$AMD64" "$IMAGE@$ARM64"
+          docker buildx imagetools inspect "$IMAGE:$TAG"
+          {
+            echo "Published preview: $IMAGE:$TAG"
+            echo "Smoke checks and scans passed on native amd64 and arm64."
+            echo "No model weights downloaded. Real transcription not tested."
+            echo "No stable or latest tag published."
+          } >> "$GITHUB_STEP_SUMMARY"
